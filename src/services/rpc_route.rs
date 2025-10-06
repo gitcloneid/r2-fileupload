@@ -7,8 +7,7 @@ use axum::{
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::services::R2Config::{build_r2_client, upload_file_with_metadata, R2Config};
-use std::error::Error;
+use crate::services::r2_config::{build_r2_client, upload_file_with_metadata, R2Config};
 pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
     // Load config dari env
     if let Err(err) = dotenvy::dotenv() {

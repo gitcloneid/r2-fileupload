@@ -1,8 +1,7 @@
 use std::error::Error;
 
-use aws_config::{imds::client, Region};
-use aws_sdk_s3::{config::Credentials, primitives::{ByteStream, SdkBody}, types::SessionMode, Client, Config};
-use serde_json::map::Keys;
+use aws_config::Region;
+use aws_sdk_s3::{config::Credentials, primitives::ByteStream, Client, Config};
 
 
 #[derive(Debug, Clone)]
@@ -12,7 +11,6 @@ pub struct R2Config {
     pub secret_key: String,
     pub bucket: String,
     pub region: Option<String>,
-    pub endpoint_override: Option<String>
 }
 
 impl R2Config {
@@ -23,7 +21,6 @@ impl R2Config {
             secret_key: std::env::var("R2_SECRET_KEY")?,
             bucket: std::env::var("CF_BUCKET_NAME")?,
             region: Some("auto".to_string()),
-            endpoint_override: None,
          })
     }
 }
