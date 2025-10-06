@@ -1,44 +1,33 @@
 mod services;
-
-use std::error::Error;
-
-use aws_sdk_s3::{config::Credentials, primitives::ByteStream, Client, Config};
-use aws_types::region::Region;
-use chrono::Utc;
+use axum::{
+    routing::post,
+    Router,
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use serde_json::json;
+use std::net::SocketAddr;
+use services::rpc_route::upload_handler;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() {
     dotenvy::dotenv().ok();
-    let account_id = std::env::var("CF_ACCOUNT_ID")?;
-    let access_key = std::env::var("R2_ACCESS_KEY")?;
-    let secret_key = std::env::var("R2_SECRET_KEY")?;
-    let bucket = std::env::var("CF_BUCKET_NAME")?;
 
-    let endpoint_url = format!("https://{}.r2.cloudflarestorage.com", account_id);
+    let app = Router::new()
+        .route("/upload", post(upload_handler))
+        .route("/", axum::routing::get(|| async {
+            (StatusCode::OK, Json(json!({
+                "message": "R2 Upload Server is running",
+                "endpoints": {
+                    "upload": "POST /upload - Upload file to R2"
+                }
+            })))
+        }));
 
-    let config = Config::builder()
-         .region(Region::new("auto"))
-         .endpoint_url(endpoint_url)
-         .credentials_provider(Credentials::new(access_key, secret_key, None, None, "r2"))
-         .behavior_version_latest() 
-         .build();
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    println!("Server http://{}", addr);
 
-    let client = Client::from_conf(config);
-
-    let data = serde_json::json!({
-        "message" : "HAI DARI RUST",
-        "timestamp" : Utc::now().to_rfc3339(),
-    });
-
-    let body = ByteStream::from(data.to_string().into_bytes());
-
-    client.put_object()
-         .bucket(bucket)
-         .key("example/json")
-         .body(body)
-         .send()
-         .await?;
-
-    println!("JSON uploaded successfully");
-    Ok(())
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
