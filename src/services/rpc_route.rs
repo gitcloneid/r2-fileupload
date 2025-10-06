@@ -1,123 +1,64 @@
-use axum::{
-    extract::Multipart,
-    response::IntoResponse,
-    Json,
-    http::StatusCode,
-};
+use axum::extract::Multipart;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::services::r2_config::{build_r2_client, upload_file_with_metadata, R2Config};
-pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
-    // Load config dari env
-    if let Err(err) = dotenvy::dotenv() {
-        eprintln!("Warning: .env load error: {:?}", err);
-    }
-    let cfg = match R2Config::from_env() {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "status": "error",
-                    "message": format!("Failed to read config: {}", e),
-                })),
-            );
-        }
-    };
+use crate::services::r2_config::{create_client, upload_file, R2Config, ApiResponse, error_response, success_response};
 
-    let client = match build_r2_client(&cfg).await {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "status": "error",
-                    "message": format!("Failed to build R2 client: {}", e),
-                })),
-            );
-        }
-    };
+struct UploadData {
+    name: String,
+    bytes: Vec<u8>,
+    description: Option<String>,
+}
 
-    // Parsing fields
+async fn parse_multipart(mut multipart: Multipart) -> Result<UploadData, ApiResponse> {
     let mut file_name = format!("uploads/{}.bin", Uuid::new_v4());
-    let mut file_bytes: Vec<u8> = Vec::new();
-    let mut metadata_description: Option<String> = None;
+    let mut file_bytes = Vec::new();
+    let mut description = None;
 
-    while let Ok(Some(field_result)) = multipart.next_field().await {
-        {
-                if let Some(name) = field_result.name() {
-                    let name = name.to_string();
-                    if name == "file" {
-                        // tentukan nama file jika tersedia
-                        if let Some(fname) = field_result.file_name() {
-                            file_name = format!("uploads/{}", fname);
-                        }
-                        match field_result.bytes().await {
-                            Ok(b) => file_bytes = b.to_vec(),
-                            Err(e) => {
-                                return (
-                                    StatusCode::BAD_REQUEST,
-                                    Json(json!({
-                                        "status": "error",
-                                        "message": format!("Failed to read file bytes: {}", e),
-                                    })),
-                                );
-                            }
-                        }
-                    } else if name == "description" {
-                        match field_result.text().await {
-                            Ok(txt) => metadata_description = Some(txt),
-                            Err(e) => {
-                                return (
-                                    StatusCode::BAD_REQUEST,
-                                    Json(json!({
-                                        "status": "error",
-                                        "message": format!("Failed to read description: {}", e),
-                                    })),
-                                );
-                            }
-                        }
-                    }
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let Some(name) = field.name() else { continue };
+
+        match name {
+            "file" => {
+                if let Some(fname) = field.file_name() {
+                    file_name = format!("uploads/{}", fname);
                 }
+                file_bytes = field.bytes().await.unwrap_or_default().to_vec();
+            }
+            "description" => {
+                description = field.text().await.ok();
+            }
+            _ => {}
         }
     }
 
-    // Siapkan metadata sebagai pasangan k/v
-    let mut metadata_vec: Vec<(String, String)> = Vec::new();
-    if let Some(desc) = metadata_description {
-        metadata_vec.push(("description".to_string(), desc));
+    if file_bytes.is_empty() {
+        return Err(error_response("No file provided", axum::http::StatusCode::BAD_REQUEST));
     }
 
-    // Upload ke R2
-    let upload_res = upload_file_with_metadata(
-        &client,
-        &cfg.bucket,
-        &file_name,
-        file_bytes,
-        Some("application/octet-stream"),
-        Some(&metadata_vec.iter().map(|(k,v)| (k.as_str(), v.as_str())).collect::<Vec<_>>()),
-    ).await;
+    Ok(UploadData { name: file_name, bytes: file_bytes, description })
+}
 
-    match upload_res {
-        Ok(_) => {
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "status": "ok",
-                    "file": file_name,
-                    "metadata": metadata_vec,
-                })),
-            )
-        }
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "status": "error",
-                    "message": e.to_string(),
-                })),
-            )
-        }
-    }
+pub async fn upload_handler(multipart: Multipart) -> ApiResponse {
+    dotenvy::dotenv().ok();
+
+    let config = R2Config::from_env().unwrap(); // Config harus ada karena .env sudah di-set
+    let client = create_client(&config).await.unwrap(); // Client creation pasti berhasil dengan config valid
+
+    let upload_data = match parse_multipart(multipart).await {
+        Ok(data) => data,
+        Err(response) => return response,
+    };
+
+    let metadata: Vec<(&str, &str)> = upload_data.description
+        .iter()
+        .map(|d| ("description", d.as_str()))
+        .collect();
+
+    upload_file(&client, &config.bucket, &upload_data.name, upload_data.bytes, "application/octet-stream", &metadata).await.unwrap();
+
+    success_response(json!({
+        "file": upload_data.name,
+        "description": upload_data.description
+    }))
 }
